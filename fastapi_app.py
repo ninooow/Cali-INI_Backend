@@ -6,13 +6,14 @@ from datetime import datetime
 
 from config import settings
 from database import get_db, init_db
-from models.core import Asset
+from models.core import Asset, SensorTag, EquipmentLimit
 from models.telemetry import HourlyMeasurement
 from pydantic import BaseModel, validator
 from typing import List, Optional
 from models.knowledge import Incident, RcaHeader, RcaPriorityMatrix, Rca4pVerification, Rca4mVerification, RcaCapaAction
 from models.workflow import ProblemTicket, OperatorInput, AuditLog
 from models.iam import User
+from models.analytics import AnalysisRun, ConditionInference, ParameterForecast, RcaMatch
 
 app = FastAPI(title=settings.PROJECT_NAME, openapi_url="/api/v1/openapi.json")
 app.settings = settings  # expose settings via app for tests
@@ -60,6 +61,47 @@ class AssetResponse(BaseModel):
 
 class AssetListResponse(BaseModel):
     data: List[AssetResponse]
+
+class SensorTagResponse(BaseModel):
+    tag_id: int
+    asset_id: int
+    pi_tag: str
+    canonical_param: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    digital_set: Optional[str] = None
+    engineering_unit: Optional[str] = None
+    span: Optional[float] = None
+    typical_value: Optional[float] = None
+    zero_value: Optional[float] = None
+    instrument_tag: Optional[str] = None
+    is_active: bool
+    source_sheet: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class SensorTagListResponse(BaseModel):
+    data: List[SensorTagResponse]
+
+class EquipmentLimitResponse(BaseModel):
+    limit_id: int
+    asset_id: int
+    parameter: str
+    unit: Optional[str] = None
+    alarm_limit: float
+    trip_limit: float
+    effective_from: Optional[datetime] = None
+    effective_to: Optional[datetime] = None
+    source_sheet: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class EquipmentLimitListResponse(BaseModel):
+    data: List[EquipmentLimitResponse]
 
 class HourlyMeasurementCreate(BaseModel):
     # existing fields...
@@ -283,6 +325,71 @@ def get_asset(asset_id: int, db: Session = Depends(get_db)):
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     return asset
+
+# Sensor tags read-only endpoints
+@app.get(
+    f"{settings.API_V1_PREFIX}/assets/{{asset_id}}/tags",
+    response_model=SensorTagListResponse,
+    tags=["assets"],
+)
+def list_asset_sensor_tags(asset_id: int, db: Session = Depends(get_db)):
+    asset = db.query(Asset).filter(Asset.asset_id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    tags = db.query(SensorTag).filter(SensorTag.asset_id == asset_id).all()
+    return {"data": tags}
+
+@app.get(
+    f"{settings.API_V1_PREFIX}/sensor-tags",
+    response_model=SensorTagListResponse,
+    tags=["assets"],
+)
+def list_all_sensor_tags(
+    asset_id: Optional[int] = None,
+    canonical_param: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(SensorTag)
+    if asset_id is not None:
+        q = q.filter(SensorTag.asset_id == asset_id)
+    if canonical_param:
+        q = q.filter(SensorTag.canonical_param == canonical_param)
+    if is_active is not None:
+        q = q.filter(SensorTag.is_active == is_active)
+    tags = q.all()
+    return {"data": tags}
+
+# Equipment limits read-only endpoints
+@app.get(
+    f"{settings.API_V1_PREFIX}/assets/{{asset_id}}/limits",
+    response_model=EquipmentLimitListResponse,
+    tags=["assets"],
+)
+def list_asset_equipment_limits(asset_id: int, db: Session = Depends(get_db)):
+    asset = db.query(Asset).filter(Asset.asset_id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    limits = db.query(EquipmentLimit).filter(EquipmentLimit.asset_id == asset_id).all()
+    return {"data": limits}
+
+@app.get(
+    f"{settings.API_V1_PREFIX}/equipment-limits",
+    response_model=EquipmentLimitListResponse,
+    tags=["assets"],
+)
+def list_all_equipment_limits(
+    asset_id: Optional[int] = None,
+    parameter: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(EquipmentLimit)
+    if asset_id is not None:
+        q = q.filter(EquipmentLimit.asset_id == asset_id)
+    if parameter:
+        q = q.filter(EquipmentLimit.parameter == parameter)
+    limits = q.all()
+    return {"data": limits}
 
 # ---------- Hourly telemetry endpoints ----------
 @app.get(
@@ -650,4 +757,229 @@ def update_user(user_id: int, updates: UserUpdate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(user)
     return user
+
+# ---------- Analytics read-only schemas ----------
+class AnalysisRunResponse(BaseModel):
+    run_id: int
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    reference_time: Optional[datetime] = None
+    engine_version: Optional[str] = None
+    runtime_mode: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class AnalysisRunListResponse(BaseModel):
+    data: List[AnalysisRunResponse]
+
+class ConditionInferenceResponse(BaseModel):
+    inference_id: int
+    run_id: int
+    asset_id: int
+    as_of_time: datetime
+    overall_state: Optional[str] = None
+    consequence_class: Optional[str] = None
+    priority: Optional[str] = None
+    dominant_symptom: Optional[str] = None
+    health_index: Optional[float] = None
+    pca_anomaly_score: Optional[float] = None
+    max_zscore: Optional[float] = None
+    statistical_available: Optional[bool] = None
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class ConditionInferenceListResponse(BaseModel):
+    data: List[ConditionInferenceResponse]
+
+class ParameterForecastResponse(BaseModel):
+    forecast_id: int
+    run_id: int
+    asset_id: int
+    canonical_param: str
+    anchor_time: Optional[datetime] = None
+    target_time: datetime
+    estimate: Optional[float] = None
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+    source: Optional[str] = None
+    model_family: Optional[str] = None
+    model_type: Optional[str] = None
+    model_quality: Optional[str] = None
+    mae: Optional[float] = None
+    rmse: Optional[float] = None
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class ParameterForecastListResponse(BaseModel):
+    data: List[ParameterForecastResponse]
+
+class RcaMatchResponse(BaseModel):
+    rca_match_id: int
+    run_id: int
+    asset_id: int
+    matched_ar_no: Optional[str] = None
+    similarity_score: Optional[float] = None
+    evidence_strength: Optional[str] = None
+    rank_no: Optional[int] = None
+    current_supporting_evidence: Optional[str] = None
+    historical_verified_evidence: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+class RcaMatchListResponse(BaseModel):
+    data: List[RcaMatchResponse]
+
+# ---------- Analytics read-only endpoints ----------
+@app.get(f"{settings.API_V1_PREFIX}/analytics/runs", response_model=AnalysisRunListResponse, tags=["analytics"])
+def list_analysis_runs(status: Optional[str] = None, db: Session = Depends(get_db)):
+    q = db.query(AnalysisRun)
+    if status:
+        q = q.filter(AnalysisRun.status == status)
+    runs = q.order_by(AnalysisRun.run_id.desc()).all()
+    return {"data": runs}
+
+@app.get(f"{settings.API_V1_PREFIX}/analytics/runs/latest", response_model=AnalysisRunResponse, tags=["analytics"])
+def get_latest_analysis_run(db: Session = Depends(get_db)):
+    run = db.query(AnalysisRun).filter(AnalysisRun.status == "COMPLETED").order_by(AnalysisRun.run_id.desc()).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="No completed analysis run found")
+    return run
+
+@app.get(f"{settings.API_V1_PREFIX}/analytics/runs/{{run_id}}", response_model=AnalysisRunResponse, tags=["analytics"])
+def get_analysis_run(run_id: int, db: Session = Depends(get_db)):
+    run = db.query(AnalysisRun).filter(AnalysisRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Analysis run not found")
+    return run
+
+@app.get(f"{settings.API_V1_PREFIX}/analytics/condition-inferences", response_model=ConditionInferenceListResponse, tags=["analytics"])
+def list_condition_inferences(
+    run_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    priority: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(ConditionInference)
+    if run_id is not None:
+        q = q.filter(ConditionInference.run_id == run_id)
+    if asset_id is not None:
+        q = q.filter(ConditionInference.asset_id == asset_id)
+    if priority:
+        q = q.filter(ConditionInference.priority == priority)
+    rows = q.order_by(ConditionInference.inference_id.asc()).all()
+    return {"data": rows}
+
+@app.get(f"{settings.API_V1_PREFIX}/analytics/parameter-forecasts", response_model=ParameterForecastListResponse, tags=["analytics"])
+def list_parameter_forecasts(
+    run_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    canonical_param: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(ParameterForecast)
+    if run_id is not None:
+        q = q.filter(ParameterForecast.run_id == run_id)
+    if asset_id is not None:
+        q = q.filter(ParameterForecast.asset_id == asset_id)
+    if canonical_param:
+        q = q.filter(ParameterForecast.canonical_param == canonical_param)
+    rows = q.order_by(ParameterForecast.target_time.asc()).all()
+    return {"data": rows}
+
+@app.get(f"{settings.API_V1_PREFIX}/analytics/rca-matches", response_model=RcaMatchListResponse, tags=["analytics"])
+def list_rca_matches(
+    run_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    matched_ar_no: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(RcaMatch)
+    if run_id is not None:
+        q = q.filter(RcaMatch.run_id == run_id)
+    if asset_id is not None:
+        q = q.filter(RcaMatch.asset_id == asset_id)
+    if matched_ar_no:
+        q = q.filter(RcaMatch.matched_ar_no == matched_ar_no)
+    rows = q.order_by(RcaMatch.rank_no.asc(), RcaMatch.rca_match_id.asc()).all()
+    return {"data": rows}
+
+# ---------- Dashboard read-only schemas ----------
+class AttentionCounts(BaseModel):
+    total: int
+    p1: int
+    p2: int
+    p3: int
+    p4: int
+
+class HeaderContext(BaseModel):
+    scope: str = "All assets"
+    as_of: Optional[datetime] = None
+    data_status: str = "UNKNOWN"
+
+class DashboardOverviewResponse(BaseModel):
+    header: HeaderContext
+    attention_summary: AttentionCounts
+    attention_items: List[ProblemTicketResponse]
+    active_assets_count: int
+
+@app.get(f"{settings.API_V1_PREFIX}/analytics/dashboard", response_model=DashboardOverviewResponse, tags=["analytics"])
+def get_dashboard_overview(db: Session = Depends(get_db)):
+    # 1. Header Context
+    latest_meas = db.query(HourlyMeasurement).order_by(HourlyMeasurement.measured_at.desc()).first()
+    latest_run = db.query(AnalysisRun).filter(AnalysisRun.status == "COMPLETED").order_by(AnalysisRun.run_id.desc()).first()
+    
+    as_of_time = None
+    data_status = "UNKNOWN"
+    if latest_run and latest_run.completed_at:
+        as_of_time = latest_run.completed_at
+        data_status = "PASS"
+    elif latest_meas and latest_meas.measured_at:
+        as_of_time = latest_meas.measured_at
+        data_status = "PASS"
+
+    header = HeaderContext(
+        scope="All assets",
+        as_of=as_of_time,
+        data_status=data_status
+    )
+
+    # 2. Attention Required
+    active_tickets = db.query(ProblemTicket).filter(
+        ProblemTicket.ticket_state.in_(["OPEN", "IN_PROGRESS"])
+    ).order_by(ProblemTicket.opened_at.desc()).all()
+
+    p1_cnt = sum(1 for t in active_tickets if t.priority == "P1")
+    p2_cnt = sum(1 for t in active_tickets if t.priority == "P2")
+    p3_cnt = sum(1 for t in active_tickets if t.priority == "P3")
+    p4_cnt = sum(1 for t in active_tickets if t.priority == "P4")
+
+    attention_summary = AttentionCounts(
+        total=len(active_tickets),
+        p1=p1_cnt,
+        p2=p2_cnt,
+        p3=p3_cnt,
+        p4=p4_cnt
+    )
+
+    # 3. Active assets count
+    active_assets_count = db.query(Asset).filter(Asset.is_active == True).count()
+
+    return {
+        "header": header,
+        "attention_summary": attention_summary,
+        "attention_items": active_tickets,
+        "active_assets_count": active_assets_count
+    }
+
+
 
