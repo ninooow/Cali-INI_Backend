@@ -11,7 +11,7 @@ from models.knowledge import (
     Incident, RcaHeader, RcaPriorityMatrix,
     Rca4pVerification, Rca4mVerification, RcaCapaAction
 )
-from models.analytics import AnalysisRun, ConditionInference, ParameterForecast, RcaMatch
+from models.analytics import AnalysisRun, ConditionInference, ParameterForecast, RcaMatch, AssetKpi
 from models.workflow import ProblemTicket, OperatorInput, AuditLog
 
 class EngineDataAdapter:
@@ -237,6 +237,11 @@ class EngineDataAdapter:
         else:
             workbook_data["RCA CAPA Actions"] = pd.DataFrame()
 
+        print("\n=== ENGINE ADAPTER DEBUG ===")
+        print("Workbook keys:")
+        for key, df in workbook_data.items():
+            print(f"- {repr(key)}: {len(df)} rows")
+        print("============================\n")
         return workbook_data
 
     @staticmethod
@@ -339,6 +344,51 @@ class EngineDataAdapter:
         )
         db.add(run)
         db.flush()
+        # Persist engine-governed Case 2 KPI values per asset
+        case2_kpis = engine_result.get("case2_kpis")
+
+        if isinstance(case2_kpis, pd.DataFrame) and not case2_kpis.empty:
+            for _, row in case2_kpis.iterrows():
+                tag = row.get("Asset")
+                asset_obj = tag_to_asset.get(tag)
+
+                if not asset_obj:
+                    continue
+
+                def numeric_or_none(value):
+                    if pd.isna(value):
+                        return None
+                    try:
+                        value = float(value)
+                        return value if np.isfinite(value) else None
+                    except (TypeError, ValueError):
+                        return None
+
+                db.add(AssetKpi(
+                    run_id=run.run_id,
+                    asset_id=asset_obj.asset_id,
+                    asset_health_score=numeric_or_none(
+                        row.get("Asset_Health_Score")
+                    ),
+                    operating_performance_index=numeric_or_none(
+                        row.get("Operational_Performance_Index")
+                    ),
+                    reliability_consequence_index=numeric_or_none(
+                        row.get("Reliability_Consequence_Index")
+                    ),
+                    load_index=numeric_or_none(
+                        row.get("Energy_Load_Index")
+                    ),
+                    production_index=numeric_or_none(
+                        row.get("Production_Index")
+                    ),
+                    downtime_30d_h=numeric_or_none(
+                        row.get("Downtime_30d_h")
+                    ),
+                    emission_intensity_proxy=numeric_or_none(
+                        row.get("Emission_Intensity_Proxy")
+                    ),
+                ))
 
         for asset_res in engine_result.get("results", []):
             tag = asset_res.get("tag_number")

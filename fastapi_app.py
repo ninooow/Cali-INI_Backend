@@ -13,7 +13,8 @@ from typing import List, Optional
 from models.knowledge import Incident, RcaHeader, RcaPriorityMatrix, Rca4pVerification, Rca4mVerification, RcaCapaAction
 from models.workflow import ProblemTicket, OperatorInput, AuditLog
 from models.iam import User
-from models.analytics import AnalysisRun, ConditionInference, ParameterForecast, RcaMatch
+from models.analytics import AnalysisRun, ConditionInference, ParameterForecast, RcaMatch, AssetKpi
+from services.intelligence_service import IntelligenceService
 
 app = FastAPI(title=settings.PROJECT_NAME, openapi_url="/api/v1/openapi.json")
 app.settings = settings  # expose settings via app for tests
@@ -143,7 +144,7 @@ class HourlyMeasurementListResponse(BaseModel):
 
 # ---------- Reliability schemas ----------
 class IncidentBase(BaseModel):
-    ar_no: str
+    ar_no: Optional[str] = None
     plant: Optional[str] = None
     equipment_class: Optional[str] = None
     date_of_occurrence: Optional[datetime] = None
@@ -839,7 +840,43 @@ class RcaMatchResponse(BaseModel):
 class RcaMatchListResponse(BaseModel):
     data: List[RcaMatchResponse]
 
-# ---------- Analytics read-only endpoints ----------
+class AssetKpiResponse(BaseModel):
+    kpi_id: int
+    run_id: int
+    asset_id: int
+
+    asset_health_score: Optional[float] = None
+    operating_performance_index: Optional[float] = None
+    reliability_consequence_index: Optional[float] = None
+
+    load_index: Optional[float] = None
+    production_index: Optional[float] = None
+    downtime_30d_h: Optional[float] = None
+    emission_intensity_proxy: Optional[float] = None
+
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class AssetKpiListResponse(BaseModel):
+    data: List[AssetKpiResponse]
+
+# ---------- Analytics endpoints ----------
+@app.post(f"{settings.API_V1_PREFIX}/analytics/runs", response_model=AnalysisRunResponse, status_code=status.HTTP_201_CREATED, tags=["analytics"])
+def trigger_analysis_run(db: Session = Depends(get_db)):
+    try:
+        result = IntelligenceService.run_analysis(db=db)
+        run = db.query(AnalysisRun).filter(AnalysisRun.run_id == result["run_id"]).first()
+        if not run:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Analysis run not found after execution")
+        return run
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analysis run execution failed: {str(e)}")
+
 @app.get(f"{settings.API_V1_PREFIX}/analytics/runs", response_model=AnalysisRunListResponse, tags=["analytics"])
 def list_analysis_runs(status: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(AnalysisRun)
@@ -911,6 +948,31 @@ def list_rca_matches(
     if matched_ar_no:
         q = q.filter(RcaMatch.matched_ar_no == matched_ar_no)
     rows = q.order_by(RcaMatch.rank_no.asc(), RcaMatch.rca_match_id.asc()).all()
+    return {"data": rows}
+
+@app.get(
+    f"{settings.API_V1_PREFIX}/analytics/asset-kpis",
+    response_model=AssetKpiListResponse,
+    tags=["analytics"],
+)
+def list_asset_kpis(
+    run_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(AssetKpi)
+
+    if run_id is not None:
+        q = q.filter(AssetKpi.run_id == run_id)
+
+    if asset_id is not None:
+        q = q.filter(AssetKpi.asset_id == asset_id)
+
+    rows = q.order_by(
+        AssetKpi.run_id.desc(),
+        AssetKpi.asset_id.asc(),
+    ).all()
+
     return {"data": rows}
 
 # ---------- Dashboard read-only schemas ----------

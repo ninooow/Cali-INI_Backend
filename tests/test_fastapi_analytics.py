@@ -156,3 +156,38 @@ def test_analytics_endpoints_with_seeded_data(db_session):
     assert rcas[0]["matched_ar_no"] == "AR-2026-089"
     assert rcas[0]["similarity_score"] == 0.92
     assert rcas[0]["evidence_strength"] == "STRONG"
+
+
+def test_trigger_analysis_run_endpoint(db_session, monkeypatch):
+    from services.intelligence_service import IntelligenceService
+
+    def fake_run_analysis(db=None):
+        now = datetime.now(timezone.utc)
+        run = AnalysisRun(
+            started_at=now,
+            completed_at=now,
+            reference_time=now,
+            engine_version="V11.x",
+            runtime_mode="SNAPSHOT",
+            status="COMPLETED",
+        )
+        target_db = db or db_session
+        target_db.add(run)
+        target_db.commit()
+        target_db.refresh(run)
+        return {
+            "run_id": run.run_id,
+            "status": run.status,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+            "engine_result": {}
+        }
+
+    monkeypatch.setattr(IntelligenceService, "run_analysis", fake_run_analysis)
+
+    resp = client.post("/api/v1/analytics/runs")
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["status"] == "COMPLETED"
+    assert data["engine_version"] == "V11.x"
+    assert "run_id" in data
